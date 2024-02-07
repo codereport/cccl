@@ -29,7 +29,6 @@
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/memory.h>
 #include <thrust/scatter.h>
-#include "thrust/sequence.h"
 #include <thrust/transform.h>
 
 #include <cub/device/device_radix_sort.cuh>
@@ -41,6 +40,7 @@
 #include <limits>
 #include <new> // bad_alloc
 
+#include "catch2_large_array_sort_helper.cuh"
 #include "catch2_radix_sort_helper.cuh"
 #include "catch2_test_helper.h"
 #include "catch2_test_launch_helper.h"
@@ -463,25 +463,6 @@ CUB_TEST("DeviceRadixSort::SortKeys: DoubleBuffer API", "[keys][radix][sort][dev
   REQUIRE(ref_keys == keys);
 }
 
-#include <chrono>
-
-class cpu_timer
-{
-  std::chrono::high_resolution_clock::time_point m_start;
-
-public:
-  cpu_timer()
-  : m_start(std::chrono::high_resolution_clock::now())
-  {}
-
-  int elapsed_ms() const
-  {
-    auto duration = std::chrono::high_resolution_clock::now() - m_start;
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-    return static_cast<int>(ms.count());
-  }
-};
-
 CUB_TEST("DeviceRadixSort::SortKeys: Large Offsets", "[large][keys][radix][sort][device]", single_key_type)
 {
   using key_t       = c2h::get<0, TestType>;
@@ -491,47 +472,29 @@ CUB_TEST("DeviceRadixSort::SortKeys: Large Offsets", "[large][keys][radix][sort]
   constexpr std::size_t max_num_items = num_items_t{1} << 34;
   const std::size_t num_items         = GENERATE_COPY(
     std::size_t{min_num_items - 1}, take(2, random(min_num_items, max_num_items)), std::size_t{max_num_items});
+  const bool is_descending = GENERATE(false, true);
 
-  CAPTURE(num_items);
+  CAPTURE(num_items, is_descending);
 
   try
   {
-    c2h::device_vector<key_t> in_keys(num_items);
-    c2h::device_vector<key_t> out_keys(num_items);
+    large_array_sort_helper<key_t> arrays;
+    arrays.initialize_for_unstable_key_sort(num_items, is_descending);
 
-    // const int num_key_seeds = 1;
-    // c2h::gen(CUB_SEED(num_key_seeds), in_keys);
-    thrust::sequence(c2h::device_policy, in_keys.begin(), in_keys.end());
-
-    const bool is_descending = GENERATE(false, true);
-
-    cpu_timer device_time;
-
-    cub::DoubleBuffer<key_t> key_buffer(
-      thrust::raw_pointer_cast(in_keys.data()), thrust::raw_pointer_cast(out_keys.data()));
+    c2h::cpu_timer timer;
 
     double_buffer_sort_t action(is_descending);
     action.initialize();
-    launch(action, key_buffer, num_items, begin_bit<key_t>(), end_bit<key_t>());
+    launch(action, arrays.keys_buffer, num_items, begin_bit<key_t>(), end_bit<key_t>());
 
-    key_buffer.selector = action.selector();
+    arrays.keys_buffer.selector = action.selector();
     action.finalize();
 
-    auto& keys = key_buffer.selector == 0 ? in_keys : out_keys;
+    auto& sorted_keys = arrays.keys_buffer.selector == 0 ? arrays.keys_in : arrays.keys_out;
 
-    std::cout << "Device sort: " << device_time.elapsed_ms() / 1000.f << "s.\n";
-
-    cpu_timer host_time;
-
-    auto ref_keys = radix_sort_reference(in_keys, is_descending);
-
-    std::cout << "Host sort: " << host_time.elapsed_ms() / 1000.f << "s.\n";
-
-    cpu_timer val_time;
-
-    REQUIRE(ref_keys == keys);
-
-    std::cout << "Validation: " << val_time.elapsed_ms() / 1000.f << "s.\n";
+    timer.print_elapsed_seconds_and_reset("Device sort");
+    REQUIRE(arrays.keys_ref == sorted_keys);
+    timer.print_elapsed_seconds_and_reset("Validate");
   }
   catch (std::bad_alloc& e)
   {
