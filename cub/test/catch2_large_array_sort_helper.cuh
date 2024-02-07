@@ -49,12 +49,13 @@ namespace detail
 template <typename key_type>
 struct index_to_sorted_key
 {
+  std::size_t num_items;
+
   template <typename index_type>
   _CCCL_HOST_DEVICE key_type operator()(index_type idx) const
   {
-    constexpr double max_index  = static_cast<double>(::cuda::std::numeric_limits<index_type>::max());
-    constexpr double max_key    = static_cast<double>(::cuda::std::numeric_limits<key_type>::max());
-    constexpr double conversion = max_key / max_index;
+    constexpr double max_key = static_cast<double>(::cuda::std::numeric_limits<key_type>::max());
+    const double conversion  = max_key / num_items;
     return static_cast<key_type>(idx * conversion);
   }
 };
@@ -90,14 +91,16 @@ struct large_array_sort_helper
       cub::DoubleBuffer<key_type>(thrust::raw_pointer_cast(keys_in.data()), thrust::raw_pointer_cast(keys_out.data()));
 
     timer.print_elapsed_seconds_and_reset("Device Alloc");
-    thrust::tabulate(c2h::device_policy, keys_out.begin(), keys_out.end(), detail::index_to_sorted_key<key_type>{});
+    thrust::tabulate(
+      c2h::device_policy, keys_out.begin(), keys_out.end(), detail::index_to_sorted_key<key_type>{num_items});
     timer.print_elapsed_seconds_and_reset("Tabulate");
     if (is_descending)
     {
       thrust::reverse(c2h::device_policy, keys_out.begin(), keys_out.end());
       timer.print_elapsed_seconds_and_reset("Reverse");
     }
-    thrust::shuffle_copy(c2h::device_policy, keys_out.cbegin(), keys_out.cend(), keys_in.begin(), thrust::default_random_engine{});
+    thrust::shuffle_copy(
+      c2h::device_policy, keys_out.cbegin(), keys_out.cend(), keys_in.begin(), thrust::default_random_engine{});
     timer.print_elapsed_seconds_and_reset("Shuffle");
     keys_ref = keys_out;
     timer.print_elapsed_seconds_and_reset("D->H Copy Ref");
